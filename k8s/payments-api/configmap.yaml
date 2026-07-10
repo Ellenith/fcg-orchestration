@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payments-api-config
+data:
+  RabbitMQ__Host: "rabbitmq"
+  RabbitMQ__Usuario: "guest"

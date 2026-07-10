@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifications-api
+  template:
+    metadata:
+      labels:
+        app: notifications-api
+    spec:
+      containers:
+        - name: notifications-api
+          image: fcg-notifications-api:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: notifications-api-config
+            - secretRef:
+                name: notifications-api-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications-api
+spec:
+  selector:
+    app: notifications-api
+  ports:
+    - port: 80
+      targetPort: 8080
+      nodePort: 30004
+  type: NodePort
