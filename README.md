@@ -478,14 +478,4 @@ docker compose up --build
 
 ---
 
-## Vídeo de demonstração
-
-{link_do_video}
-
-## Documentação DDD
-
-{link_do_miro}
-
----
-
 *FIAP Cloud Games · Tech Challenge Fase 2 · PosTech FIAP*
