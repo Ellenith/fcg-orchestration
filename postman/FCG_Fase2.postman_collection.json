@@ -1,0 +1,305 @@
+{
+  "info": {
+    "name": "FCG - Fase 2 - Microsserviços",
+    "description": "Collection para testar o fluxo completo de cadastro e compra da FIAP Cloud Games (Fase 2 - Microsserviços). Use as variáveis de ambiente para configurar as URLs do Minikube.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "users_url",
+      "value": "http://127.0.0.1:00000",
+      "type": "string"
+    },
+    {
+      "key": "catalog_url",
+      "value": "http://127.0.0.1:00000",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "jogo_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1 - Fluxo de Cadastro",
+      "item": [
+        {
+          "name": "Cadastrar Usuario",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Salva automaticamente o token se vier na resposta (não vem aqui, mas deixamos por padrão)",
+                  "pm.test('Status 201', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Lucas Pereira\",\n  \"email\": \"lucas.pereira@fiap.com.br\",\n  \"senha\": \"Senha@123\"\n}"
+            },
+            "url": {
+              "raw": "{{users_url}}/usuarios",
+              "host": ["{{users_url}}"],
+              "path": ["usuarios"]
+            },
+            "description": "Cadastra o primeiro usuário — vira Admin automaticamente. Dispara UserCreatedEvent consumido pelo NotificationsAPI."
+          }
+        },
+        {
+          "name": "Cadastrar Segundo Usuario (User comum)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Maria Santos\",\n  \"email\": \"maria@fiap.com.br\",\n  \"senha\": \"Senha@123\"\n}"
+            },
+            "url": {
+              "raw": "{{users_url}}/usuarios",
+              "host": ["{{users_url}}"],
+              "path": ["usuarios"]
+            },
+            "description": "Segundo usuário cadastrado — recebe role User."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 - Autenticacao",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Salva o token automaticamente na variável de coleção",
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.token) {",
+                  "    pm.collectionVariables.set('token', jsonData.token);",
+                  "    console.log('Token salvo:', jsonData.token);",
+                  "}",
+                  "",
+                  "pm.test('Status 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Token retornado', function () {",
+                  "    pm.expect(jsonData.token).to.not.be.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"lucas.pereira@fiap.com.br\",\n  \"senha\": \"Senha@123\"\n}"
+            },
+            "url": {
+              "raw": "{{users_url}}/auth/login",
+              "host": ["{{users_url}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "Faz login e salva automaticamente o token na variável {{token}} da collection."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 - Catalogo",
+      "item": [
+        {
+          "name": "Cadastrar Jogo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Salva o id do jogo automaticamente",
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.id) {",
+                  "    pm.collectionVariables.set('jogo_id', jsonData.id);",
+                  "    console.log('JogoId salvo:', jsonData.id);",
+                  "}",
+                  "",
+                  "pm.test('Status 201', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"titulo\": \"Minecraft\",\n  \"descricao\": \"Jogo de construção e sobrevivência\",\n  \"preco\": 99.90\n}"
+            },
+            "url": {
+              "raw": "{{catalog_url}}/jogos",
+              "host": ["{{catalog_url}}"],
+              "path": ["jogos"]
+            },
+            "description": "Requer role Admin. Salva automaticamente o jogo_id na variável da collection."
+          }
+        },
+        {
+          "name": "Listar Jogos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog_url}}/jogos",
+              "host": ["{{catalog_url}}"],
+              "path": ["jogos"]
+            },
+            "description": "Público — lista todos os jogos com preço atual."
+          }
+        },
+        {
+          "name": "Criar Promocao",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"percentualDesconto\": 20,\n  \"inicio\": \"2026-01-01T00:00:00\",\n  \"fim\": \"2099-12-31T23:59:59\"\n}"
+            },
+            "url": {
+              "raw": "{{catalog_url}}/jogos/{{jogo_id}}/promocoes",
+              "host": ["{{catalog_url}}"],
+              "path": ["jogos", "{{jogo_id}}", "promocoes"]
+            },
+            "description": "Requer role Admin. Datas em horário de Brasília (UTC-3)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 - Fluxo de Compra",
+      "item": [
+        {
+          "name": "Comprar Jogo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 202 Accepted', function () {",
+                  "    pm.response.to.have.status(202);",
+                  "});",
+                  "",
+                  "var jsonData = pm.response.json();",
+                  "console.log('OrderId gerado:', jsonData.orderId);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": {
+              "raw": "{{catalog_url}}/jogos/{{jogo_id}}/comprar",
+              "host": ["{{catalog_url}}"],
+              "path": ["jogos", "{{jogo_id}}", "comprar"]
+            },
+            "description": "Publica OrderPlacedEvent. Retorna 202 Accepted — o jogo só aparece na biblioteca após o processamento assíncrono do pagamento (aguarde alguns segundos antes de checar)."
+          }
+        },
+        {
+          "name": "Verificar Biblioteca",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": {
+              "raw": "{{catalog_url}}/biblioteca",
+              "host": ["{{catalog_url}}"],
+              "path": ["biblioteca"]
+            },
+            "description": "Aguarde alguns segundos após a compra antes de chamar este endpoint — o processamento do pagamento é assíncrono via RabbitMQ."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 - Testes de Regra de Negocio",
+      "item": [
+        {
+          "name": "Comprar Mesmo Jogo Novamente (deve falhar apos aprovacao)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": {
+              "raw": "{{catalog_url}}/jogos/{{jogo_id}}/comprar",
+              "host": ["{{catalog_url}}"],
+              "path": ["jogos", "{{jogo_id}}", "comprar"]
+            },
+            "description": "Publica um novo OrderPlacedEvent. Se o jogo já estiver na biblioteca, o consumer do CatalogAPI vai logar 'Usuário já possui o jogo' e não duplicar (verifique os logs do pod catalog-api)."
+          }
+        },
+        {
+          "name": "Cadastrar Jogo Como User Comum (deve dar 403)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"titulo\": \"Outro Jogo\",\n  \"descricao\": \"Teste de autorizacao\",\n  \"preco\": 10.00\n}"
+            },
+            "url": {
+              "raw": "{{catalog_url}}/jogos",
+              "host": ["{{catalog_url}}"],
+              "path": ["jogos"]
+            },
+            "description": "Use o token do segundo usuário (Maria, role User) para este teste — deve retornar 403 Forbidden."
+          }
+        }
+      ]
+    }
+  ]
+}
