@@ -1,0 +1,9 @@
+apiVersion: configuration.konghq.com/v1
+kind: KongConsumer
+metadata:
+  name: fcg-api-consumer
+  annotations:
+    kubernetes.io/ingress.class: kong
+username: fcg-api-consumer
+credentials:
+  - fcg-jwt-credential

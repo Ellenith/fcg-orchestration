@@ -1,0 +1,21 @@
+# usuarios-listagem-protegida.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: usuarios-get-protected
+  annotations:
+    konghq.com/methods: "GET"
+    konghq.com/plugins: jwt-auth
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: kong
+  rules:
+    - http:
+        paths:
+          - path: /usuarios
+            pathType: Exact       # só o path exato, não /usuarios/{id}
+            backend:
+              service:
+                name: users-api    # confira o nome real do Service
+                port:
+                  number: 80

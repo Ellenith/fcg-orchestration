@@ -1,0 +1,19 @@
+# catalogapi-route.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: catalogapi-route
+  annotations:
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: kong
+  rules:
+    - http:
+        paths:
+          - path: /jogos
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-api   # <- troque pelo nome real do Service K8s
+                port:
+                  number: 80
