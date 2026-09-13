@@ -16,6 +16,6 @@ spec:
             pathType: Exact       # só o path exato, não /usuarios/{id}
             backend:
               service:
-                name: users-api    # confira o nome real do Service
+                name: users-api    
                 port:
                   number: 80

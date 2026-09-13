@@ -14,9 +14,9 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: users-api     # <- troque pelo nome real do Service K8s
+                name: users-api     
                 port:
-                  number: 80       # <- troque pela porta real do Service
+                  number: 80       
           - path: /usuarios
             pathType: Prefix
             backend:

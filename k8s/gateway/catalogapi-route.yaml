@@ -14,6 +14,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: catalog-api   # <- troque pelo nome real do Service K8s
+                name: catalog-api   
                 port:
                   number: 80

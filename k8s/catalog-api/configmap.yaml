@@ -8,3 +8,6 @@ data:
   Jwt__ExpirationMinutes: "60"
   RabbitMQ__Host: "rabbitmq"
   RabbitMQ__Usuario: "guest"
+  MongoDB__ConnectionString: "mongodb://mongodb:27017"
+  MongoDB__Database: "fcg_catalog"
+  Redis__ConnectionString: "redis:6379"
