@@ -16,8 +16,8 @@ spec:
     spec:
       containers:
         - name: users-api
-          image: fcg-users-api:latest
-          imagePullPolicy: Never
+          image: fcgacr203f9c81.azurecr.io/fcg-users-api:v1
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           envFrom:
@@ -25,6 +25,13 @@ spec:
                 name: users-api-config
             - secretRef:
                 name: users-api-secret
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: users-api-data
 ---
 apiVersion: v1
 kind: Service

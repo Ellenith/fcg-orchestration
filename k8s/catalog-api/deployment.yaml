@@ -16,8 +16,8 @@ spec:
     spec:
       containers:
         - name: catalog-api
-          image: fcg-catalog-api:latest
-          imagePullPolicy: Never
+          image: fcgacr203f9c81.azurecr.io/fcg-catalog-api:v1
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           envFrom:
@@ -25,6 +25,13 @@ spec:
                 name: catalog-api-config
             - secretRef:
                 name: catalog-api-secret
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: catalog-api-data
 ---
 apiVersion: v1
 kind: Service

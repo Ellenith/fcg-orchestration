@@ -14,8 +14,8 @@ spec:
     spec:
       containers:
         - name: notifications-api
-          image: fcg-notifications-api:latest
-          imagePullPolicy: Never
+          image: fcgacr203f9c81.azurecr.io/fcg-notifications-api:v1
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           envFrom:
