@@ -11,3 +11,4 @@ data:
   MongoDB__ConnectionString: "mongodb://mongodb:27017"
   MongoDB__Database: "fcg_catalog"
   Redis__ConnectionString: "redis:6379"
+  ConnectionStrings__DefaultConnection: "Data Source=/app/data/catalog.db"

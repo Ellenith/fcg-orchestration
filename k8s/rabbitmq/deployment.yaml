@@ -22,7 +22,10 @@ spec:
             - name: RABBITMQ_DEFAULT_USER
               value: "guest"
             - name: RABBITMQ_DEFAULT_PASS
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: RABBITMQ_DEFAULT_PASS
 ---
 apiVersion: v1
 kind: Service

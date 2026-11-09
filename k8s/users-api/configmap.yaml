@@ -8,3 +8,4 @@ data:
   Jwt__ExpirationMinutes: "60"
   RabbitMQ__Host: "rabbitmq"
   RabbitMQ__Usuario: "guest"
+  ConnectionStrings__DefaultConnection: "Data Source=/app/data/users.db"
