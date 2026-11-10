@@ -28,4 +28,11 @@ apply fcg-jwt-credential \
   --from-literal=secret="$JWT_SECRET"
 kubectl label secret fcg-jwt-credential konghq.com/credential=jwt --overwrite
 
+
+: "${ELASTIC_ENDPOINT:?defina ELASTIC_ENDPOINT}"
+: "${ELASTIC_API_KEY:?defina ELASTIC_API_KEY}"
+apply elastic-secret \
+  --from-literal=Elastic__Endpoint="${ELASTIC_ENDPOINT%/}" \
+  --from-literal=Elastic__ApiKey="$ELASTIC_API_KEY"
+
 echo "Secrets criados/atualizados."
