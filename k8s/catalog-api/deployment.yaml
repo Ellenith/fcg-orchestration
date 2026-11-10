@@ -16,15 +16,22 @@ spec:
     spec:
       containers:
         - name: catalog-api
-          image: fcgacr203f9c81.azurecr.io/fcg-catalog-api:v1
+          image: fcgacr203f9c81.azurecr.io/fcg-catalog-api:v2
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
           envFrom:
             - configMapRef:
                 name: catalog-api-config
             - secretRef:
                 name: catalog-api-secret
+            - secretRef:
+                name: elastic-secret
           volumeMounts:
             - name: data
               mountPath: /app/data
