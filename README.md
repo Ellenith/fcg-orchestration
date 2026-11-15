@@ -1,234 +1,220 @@
-# FCG — FIAP Cloud Games (Fase 3)
+# FIAP Cloud Games (FCG) — Fase 4
 
-Repositório de orquestração da plataforma FCG. Contém os manifests Kubernetes, scripts de ambiente e a documentação central de todos os microsserviços.
+Plataforma de jogos em microsserviços, executando em **Kubernetes gerenciado na Azure (AKS)**, com **CI/CD no GitHub Actions**, **NoSQL (MongoDB)**, **cache distribuído (Redis)** e **busca avançada com Elasticsearch** (fuzzy + relevância).
 
-Na Fase 2, o monólito foi dividido em quatro microsserviços independentes, o que resolveu o acoplamento mas abriu quatro problemas novos. A Fase 3 é a resposta a cada um deles.
+Este repositório (`fcg-orchestration`) concentra os manifests Kubernetes, os scripts de infraestrutura e este guia. O código de cada serviço fica em seu próprio repositório.
 
-| Problema | Solução | Pilar |
-|---|---|---|
-| Cliente precisava conhecer o endereço de cada serviço; nada impedia acesso direto pulando autenticação | Kong como ponto único de entrada, validando JWT na borda | API Gateway |
-| Falha em produção só era descoberta por reclamação — sem visibilidade de latência ou taxa de erro | OpenTelemetry + Prometheus + Grafana | Observabilidade |
-| NotificationsAPI consumia recursos 24/7 para ficar ocioso a maior parte do tempo | Azure Function acionada por evento | Serverless |
-| Banco relacional único atendendo dados flexíveis e leituras repetitivas | MongoDB para avaliações + Redis como cache | Persistência poliglota |
+## Sumário
 
----
+1. [Arquitetura](#arquitetura)
+2. [Repositórios](#repositórios)
+3. [Infraestrutura na Azure](#infraestrutura-na-azure)
+4. [Como subir tudo do zero](#como-subir-tudo-do-zero)
+5. [Segredos](#segredos-zero-hardcoded-credentials)
+6. [CI/CD](#cicd)
+7. [Busca avançada (Elasticsearch)](#busca-avançada-elasticsearch)
+8. [NoSQL e Cache](#nosql-e-cache)
+9. [Testando a aplicação](#testando-a-aplicação)
+10. [Custos e rotina de uso](#custos-e-rotina-de-uso)
+11. [Limitações conhecidas](#limitações-conhecidas)
 
 ## Arquitetura
 
 ```
-                          ┌─────────────┐
-   cliente ──────────────▶│    Kong     │  (roteamento + validação JWT)
-                          └──────┬──────┘
-                    ┌────────────┴────────────┐
-                    ▼                         ▼
-            ┌───────────────┐        ┌────────────────┐
-            │   UsersAPI    │        │   CatalogAPI   │
-            │   (SQLite)    │        │ SQLite + Mongo │
-            └───────┬───────┘        │    + Redis     │
-                    │                └───────┬────────┘
-                    │      ┌─────────────────┘
-                    ▼      ▼
-                ┌─────────────┐
-                │  RabbitMQ   │
-                └──────┬──────┘
-                   ┌───┴────┐
-                   ▼        ▼
-         ┌──────────────┐  ┌──────────────────┐
-         │ PaymentsAPI  │  │ NotificationsAPI │
-         └──────────────┘  │   (adaptador)    │
-                           └────────┬─────────┘
-                                    │ HTTP
-                                    ▼
-                        ┌────────────────────────┐
-                        │  Azure Function        │
-                        │  (plano Consumption)   │
-                        └────────────────────────┘
-
-   UsersAPI e CatalogAPI expõem /metrics ──▶ Prometheus ──▶ Grafana
+                          Internet
+                             │
+                  ┌──────────▼───────────┐
+                  │  Kong (LoadBalancer) │  IP público · roteamento · JWT
+                  └───┬──────────────┬───┘
+        /auth /usuarios              /jogos /search
+                  │                  │
+          ┌───────▼──────┐   ┌───────▼───────┐        ┌────────────────────┐
+          │  UsersAPI    │   │  CatalogAPI   │───────▶│ Elasticsearch      │
+          │  (SQLite+PVC)│   │  (SQLite+PVC) │ índice │ (Elastic Cloud)    │
+          └───────┬──────┘   └──┬─────┬───┬──┘        └────────────────────┘
+                  │             │     │   │
+                  │             │     │   └──────▶ Redis (cache-aside, TTL 30s)
+                  │             │     └──────────▶ MongoDB (avaliações)
+                  │             │
+                  └──────┐      │ OrderPlacedEvent
+                         ▼      ▼
+                       ┌──────────────┐        ┌──────────────┐
+                       │  RabbitMQ    │◀──────▶│ PaymentsAPI  │
+                       └──────────────┘        └──────────────┘
+                       (UserCreatedEvent, OrderPlacedEvent, PaymentProcessedEvent)
 ```
 
----
+**Fluxo de compra:** `POST /jogos/{id}/comprar` → CatalogAPI publica `OrderPlacedEvent` → PaymentsAPI processa e publica `PaymentProcessedEvent` → CatalogAPI adiciona o jogo à biblioteca.
 
-## Stack escolhida
+## Repositórios
 
-| Pilar | Escolha | Justificativa resumida |
+| Repositório | Conteúdo |
+|---|---|
+| `fcg-orchestration` (este) | Manifests K8s, scripts, documentação |
+| `fcg-users-api` | UsersAPI + testes + workflow CI/CD |
+| `fcg-catalog-api` | CatalogAPI + testes + workflow CI/CD |
+| `fcg-payments-api` | PaymentsAPI |
+| `fcg-notifications-api` / `fcg-notifications-function` | Notificações via Azure Function (Fase 3, não implantado no AKS nesta fase) |
+
+## Infraestrutura na Azure
+
+| Recurso | Nome | Observação |
 |---|---|---|
-| API Gateway | Kong Ingress Controller | Open-source, roda no cluster Kubernetes já existente, suporta plugins (JWT, rate limit) além de roteamento |
-| Serverless | Azure Functions, plano Consumption | Único provedor com trigger nativo de RabbitMQ; ver decisão detalhada abaixo |
-| Observabilidade | **Opção A** — Prometheus + Grafana | Custo zero, roda local, controle total sobre a instrumentação |
-| NoSQL | MongoDB | Modelo de documento se encaixa na estrutura flexível das avaliações |
-| Cache | Redis via `IDistributedCache` | Compartilhado entre réplicas, ao contrário de cache em memória de processo |
+| Resource Group | `rg-fcg` | região `eastus` |
+| Container Registry (ACR) | `fcgacr203f9c81` | SKU Basic, registry privado |
+| AKS | `aks-fcg` | tier Free, 1 nó `Standard_D2s_v4`, ACR anexado |
+| Elasticsearch | Elastic Cloud (Serverless) | índice `jogos` |
+| Exposição | Kong com `Service LoadBalancer` | IP público |
 
----
+Provisionamento (idempotente): `scripts/provision-azure.sh`.
 
-## Como subir o ambiente do zero
+## Como subir tudo do zero
 
-**Pré-requisitos:** Docker Desktop com Kubernetes habilitado, Helm, kubectl, .NET 9 SDK, Azure Functions Core Tools (apenas para desenvolvimento da Function).
+**Pré-requisitos:** Azure CLI, `kubectl`, `helm`, Docker, Git Bash (ou Linux/macOS), conta Azure e um deployment do Elastic Cloud.
+
+**1. Provisionar o cluster**
 
 ```bash
-# 1. Habilitar Kubernetes no Docker Desktop e aguardar o cluster subir
-
-# 2. Subir toda a infraestrutura
-bash scripts/bootstrap-dev.sh
+az login --tenant <TENANT_ID>
+export MSYS_NO_PATHCONV=1                 # somente no Git Bash
+NODE_SIZE=Standard_D2s_v4 bash scripts/provision-azure.sh
 ```
 
-O script cuida de tudo: instala Kong e a stack de observabilidade via Helm, carrega as imagens locais nos nós do cluster, aplica RabbitMQ/MongoDB/Redis, sobe os três microsserviços, configura as rotas do Gateway e abre os port-forwards.
+**2. Criar o `.env.local`** (arquivo ignorado pelo Git — modelo em `secrets.example.env`)
 
-Ao final, os seguintes endereços ficam disponíveis:
+```bash
+cp secrets.example.env .env.local
+# preencha: JWT_SECRET, RABBITMQ_PASSWORD, ELASTIC_ENDPOINT, ELASTIC_API_KEY
+# gerar valores:  openssl rand -base64 48   |   openssl rand -base64 24
+```
 
-| Serviço | Endereço |
+**3. Publicar as imagens no ACR** (o pipeline faz isso automaticamente para Users e Catalog; o primeiro envio é manual)
+
+```bash
+ACR=fcgacr203f9c81
+az acr login --name $ACR
+for svc in fcg-users-api fcg-catalog-api fcg-payments-api; do
+  docker build -t $ACR.azurecr.io/$svc:v1 ../$svc && docker push $ACR.azurecr.io/$svc:v1
+done
+```
+
+**4. Instalar o Kong (IP público)**
+
+```bash
+helm repo add kong https://charts.konghq.com && helm repo update
+helm install kong kong/ingress -n kong --create-namespace
+kubectl get svc -n kong kong-gateway-proxy -w     # aguarde o EXTERNAL-IP
+```
+
+**5. Criar os Secrets e aplicar os manifests** (os Secrets precisam existir antes dos Deployments)
+
+```bash
+bash scripts/create-secrets.sh
+
+kubectl apply -f k8s/rabbitmq/ -f k8s/mongodb/ -f k8s/redis/
+kubectl apply -f k8s/users-api/ -f k8s/catalog-api/ -f k8s/payments-api/
+kubectl apply -f k8s/gateway/
+kubectl get pods
+```
+
+**6. Popular o índice de busca** (autenticado como Admin)
+
+```bash
+curl -X POST http://<IP-DO-KONG>/search/reindexar -H "Authorization: Bearer <TOKEN>"
+```
+
+**Atalho para o dia a dia:** `source scripts/up.sh` liga o AKS, carrega o `.env.local`, descobre o IP do Kong e gera um token do Admin de teste. Use `login` para renovar o token e `down` para parar o cluster.
+
+## Segredos (Zero Hardcoded Credentials)
+
+Nenhuma credencial está no código ou nos YAMLs.
+
+| Segredo | Onde vive | Como chega ao pod |
+|---|---|---|
+| `Jwt__Secret` | Secret K8s `users-api-secret`, `catalog-api-secret` e credencial do Kong (`fcg-jwt-credential`) | `envFrom` / `secretRef` |
+| `RabbitMQ__Senha` | Secrets `*-api-secret` e `rabbitmq-secret` | `envFrom` / `secretKeyRef` |
+| `Elastic__Endpoint`, `Elastic__ApiKey` | Secret `elastic-secret` | `envFrom` / `secretRef` |
+| Credenciais do pipeline | **GitHub Secrets** de cada repositório | variáveis do workflow |
+
+- Os Secrets do cluster são criados por `scripts/create-secrets.sh` a partir do `.env.local` (fora do Git) ou de variáveis de ambiente.
+- Os `appsettings.json` das APIs contêm apenas o placeholder `CONFIGURE_VIA_ENV`; as variáveis do Secret sobrescrevem o valor em tempo de execução.
+
+## CI/CD
+
+Workflow `.github/workflows/ci.yml` em `fcg-users-api` e `fcg-catalog-api`:
+
+| Job | Quando | O que faz |
+|---|---|---|
+| **Build & Test** | todo push e pull request em `main` | `dotnet restore`, `build` e testes unitários (xUnit) |
+| **Imagem + Push (ACR)** | push em `main` | build da imagem Docker com tag = **SHA do commit** e push no ACR |
+| **Deploy no AKS** | após o push | `kubectl set image` + `kubectl rollout status` (**Rolling Update**, sem downtime) |
+
+**Credenciais do pipeline:** um Service Principal (`fcg-github-actions`) com `AcrPush` no ACR e `Azure Kubernetes Service Cluster Admin Role` no AKS, ambos limitados a esses dois recursos. Os valores ficam nos GitHub Secrets `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` e `AZURE_SUBSCRIPTION_ID`.
+
+```bash
+az ad sp create-for-rbac --name fcg-github-actions --role AcrPush --scopes <ID-DO-ACR>
+az role assignment create --assignee <APP_ID> \
+  --role "Azure Kubernetes Service Cluster Admin Role" --scope <ID-DO-AKS>
+```
+
+**Rolling Update:** os Deployments têm `readinessProbe` (TCP 8080), então o Kubernetes só remove o pod antigo depois que o novo está pronto.
+
+## Busca avançada (Elasticsearch)
+
+- **Serviço:** Elastic Cloud (Serverless), independente do banco relacional.
+- **Índice `jogos`:** `titulo` e `descricao` como `text` (analyzer `folding`: minúsculas e sem acento), `titulo.raw` como `keyword`, mais `preco`, `precoAtual`, `temPromocaoAtiva` e `criadoEm`.
+- **Sincronização (CatalogAPI):** o jogo é indexado ao ser **cadastrado**, ao ter o **preço atualizado**, ao receber uma **promoção** e removido do índice ao ser **excluído**. Falhas do Elasticsearch são registradas em log e **não derrubam** a operação principal.
+- **`GET /search?q=termo`:** `multi_match` em `titulo^3` e `descricao` com `fuzziness: AUTO` (tolerância a erros de digitação), ordenado por relevância (`_score`).
+- **`POST /search/reindexar`** (Admin): recria o índice, se necessário, e envia todos os jogos em lote (bulk).
+
+```bash
+curl "http://<IP>/search?q=zeldaa"      # encontra "Zelda" mesmo com erro de digitação
+```
+
+## NoSQL e Cache
+
+| Recurso | Uso |
 |---|---|
-| Kong (Gateway) | http://localhost:8000 |
-| UsersAPI (acesso direto, para debug) | http://localhost:8081 |
-| CatalogAPI (acesso direto, para debug) | http://localhost:8082 |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 (usuário `admin`) |
-| RabbitMQ / MongoDB / Redis | localhost:5672 / 27017 / 6379 |
+| **MongoDB** (`MongoDB.Driver`) | Avaliações de jogos (`POST` e `GET /jogos/{id}/avaliacoes`) — dados flexíveis e de alto volume |
+| **Redis** (`IDistributedCache`) | Cache-aside de `GET /jogos`, TTL de 30s. O header `X-Cache` mostra `MISS` ou `HIT` |
 
-Senha do Grafana:
+## Testando a aplicação
+
 ```bash
-kubectl get secret -n monitoring monitoring-grafana -o jsonpath='{.data.admin-password}' | base64 -d
+IP=<EXTERNAL-IP do Kong>
+
+# cadastro e login
+curl -X POST http://$IP/usuarios -H "Content-Type: application/json" \
+  -d '{"nome":"Admin","email":"admin@fcg.com","senha":"<SENHA-FORTE>"}'
+curl -X POST http://$IP/auth/login -H "Content-Type: application/json" \
+  -d '{"email":"admin@fcg.com","senha":"<SENHA-FORTE>"}'
+
+# JWT validado no Gateway: 401 sem token, 200 com token
+curl -i http://$IP/usuarios
+curl -i http://$IP/usuarios -H "Authorization: Bearer <TOKEN>"
+
+# cache: compare X-Cache e a latência
+curl -s -o /dev/null -D - http://$IP/jogos | grep -i -E "x-cache|x-kong-upstream-latency"
 ```
 
-**Para o fluxo serverless**, o adaptador roda localmente:
+A coleção Postman está em `postman/`.
+
+## Custos e rotina de uso
+
+O plano de controle do AKS (tier Free) não tem custo. O que cobra é a VM do nó por hora ligada, o IP público e os discos. Por isso:
+
 ```bash
-cd ../fcg-notifications-api/FCG.NotificationsAPI
-dotnet run
+az aks stop  --resource-group rg-fcg --name aks-fcg    # ao encerrar a sessão
+az aks start --resource-group rg-fcg --name aks-fcg    # ao voltar
 ```
 
----
-
-## Decisões de arquitetura
-
-### 1. JWT validado no Gateway
-
-O plugin `jwt` do Kong valida o token antes que a requisição alcance qualquer microsserviço. Isso concentra a política de autenticação em um único lugar (em vez de replicá-la nos quatro serviços) e reduz a superfície de ataque: uma requisição sem token válido nunca consome CPU da aplicação nem aparece nos seus logs.
-
-**A limitação que encontramos:** o recurso `Ingress` do Kubernetes roteia por path, não por método HTTP. Isso é um problema porque `POST /usuarios` (cadastro, público) e `GET /usuarios` (listagem, restrita a Admin) compartilham exatamente o mesmo path — aplicar o plugin ao path inteiro bloquearia o cadastro de novos usuários.
-
-A solução foi usar a anotação `konghq.com/methods: "GET"` combinada com `pathType: Exact` em um `Ingress` dedicado, de modo que o plugin se aplique apenas ao verbo protegido. O Ingress geral de roteamento permanece sem o plugin, atendendo os endpoints públicos.
-
-**Escopo consciente:** o Gateway valida a *autenticidade* do token; a *autorização* fina por role (`[Authorize(Roles = "Admin")]`) continua sendo responsabilidade de cada serviço. O Gateway é uma camada adicional de defesa, não um substituto da validação interna.
-
-Um detalhe de integração que vale registrar: o plugin `jwt` do Kong identifica a credencial pelo claim `iss` do token. O valor real emitido pelo UsersAPI é `FCG.UsersAPI` (definido em `Jwt__Issuer`), e é esse valor que precisa constar no campo `key` do Secret da credencial.
-
-### 2. Serverless com adaptador HTTP
-
-O requisito era mover a lógica de notificações para uma função serverless acionada por evento. A pesquisa da documentação atual dos dois principais provedores revelou um impasse com RabbitMQ:
-
-- **AWS Lambda** não aceita RabbitMQ self-hosted como gatilho nativo — exige Amazon MQ, o serviço gerenciado, com custo associado.
-- **Azure Functions** possui trigger nativo de RabbitMQ, mas ele é suportado apenas nos planos Premium e Dedicated. O plano Consumption (o gratuito, que cobra apenas pela execução) não o suporta.
-
-Ou seja: nenhum caminho oferecia trigger nativo de RabbitMQ sem custo recorrente.
-
-**A decisão foi usar trigger HTTP no plano Consumption**, mantendo o NotificationsAPI como um adaptador leve: ele continua consumindo os eventos da fila via MassTransit, mas em vez de processar a notificação, serializa o evento e invoca a Function por HTTP.
-
-Isso é um meio-termo consciente. A parte "sempre ligada" não desaparece por completo, mas fica reduzida a um encaminhador simples, e o processamento de fato ocorre em ambiente serverless com custo zero. O trade-off foi escolhido priorizando ausência de custo recorrente em um projeto acadêmico.
-
-Uma consequência favorável do desenho: como é o adaptador (local) que faz a chamada de saída para a nuvem, não é necessário expor o RabbitMQ publicamente nem contratar um broker hospedado.
-
-O ack da mensagem só ocorre após a resposta HTTP bem-sucedida (`EnsureSuccessStatusCode`), de modo que uma falha na Function devolve a mensagem à fila em vez de descartá-la silenciosamente.
-
-**Repositório da Function:** https://github.com/Ellenith/fcg-notifications-function
-
-### 3. Observabilidade com OpenTelemetry (Opção A)
-
-A instrumentação usa **OpenTelemetry**, o padrão aberto da indústria, em vez de um SDK proprietário. A vantagem prática é o desacoplamento: o código instrumentado não conhece o Prometheus. Trocar o destino das métricas por Datadog, New Relic ou qualquer backend compatível com OTLP exigiria mudar o exportador, não a instrumentação.
-
-Para ASP.NET Core a instrumentação é automática — `AddAspNetCoreInstrumentation()` se pluga no pipeline e captura duração, status code e rota de todas as requisições sem código manual por endpoint.
-
-O Prometheus opera por **pull**: as aplicações apenas expõem `/metrics` e ele as consulta a cada 15 segundos. A aplicação não precisa saber que o Prometheus existe nem falhar se ele estiver indisponível. Dentro do Kubernetes, a descoberta dos alvos é automática via `ServiceMonitor`, então novos pods passam a ser monitorados sem configuração manual.
-
-O dashboard cobre as três métricas exigidas:
-
-| Painel | O que responde |
-|---|---|
-| Requisições por segundo | Volume de tráfego por serviço e status HTTP |
-| Latência p95 | 95% das requisições foram mais rápidas que este valor |
-| Taxa de erro | Percentual de respostas 4xx e 5xx sobre o total |
-
-**Por que p95 e não média:** a média esconde os casos ruins. Cem requisições de 10ms e cinco de 3 segundos produzem uma média baixa e nenhum indício de que cinco usuários tiveram uma experiência péssima. O percentil 95 expõe exatamente esse comportamento de cauda.
-
-O dashboard é versionado como código (`k8s/observability/`) e recarregado automaticamente a cada reset do cluster, já que o Grafana não persiste configuração por padrão nesta instalação.
-
-### 4. Avaliações em NoSQL (persistência poliglota)
-
-O CatalogAPI usa **dois bancos simultaneamente**: SQLite para jogos e promoções, MongoDB para avaliações. Não é substituição — é usar o banco adequado a cada tipo de dado.
-
-Avaliações se encaixam no modelo de documento por duas razões:
-
-- **Estrutura flexível.** Uma avaliação pode ganhar resposta do desenvolvedor, votos de "útil" ou tags no futuro, sem exigir migração de schema nem afetar os registros existentes.
-- **Volume alto e desbalanceado.** Um jogo popular pode acumular milhares de avaliações enquanto outro não tem nenhuma — uma distribuição que o modelo de documento absorve naturalmente.
-
-Jogos, por outro lado, têm estrutura fixa e relacionamentos (promoções, biblioteca) que o modelo relacional atende melhor. Cada tipo de dado permanece onde faz mais sentido.
-
-A implementação segue o mesmo padrão DDD do restante do projeto: a entidade `Avaliacao` tem construtor privado e factory method com validação, e o repositório é acessado por interface no domínio. A única diferença é a implementação na camada de infraestrutura, que usa o driver do MongoDB em vez do EF Core.
-
-### 5. Cache-aside com TTL curto
-
-`GET /jogos` é o endpoint mais acessado da plataforma e o mais desperdiçador: repete a mesma consulta com joins, o mesmo cálculo de preço promocional e a mesma serialização, para produzir um resultado que raramente muda.
-
-O padrão adotado é **cache-aside**: a aplicação consulta o Redis primeiro e, em caso de ausência, busca no banco e popula o cache. As operações de cache são envolvidas em `try/catch`, de forma que uma indisponibilidade do Redis degrade a performance sem derrubar o endpoint.
-
-**O TTL de 30 segundos é uma decisão de negócio, não técnica.** Ele resolve o problema de invalidação da forma mais simples possível: em vez de rastrear todos os pontos do código que modificam o catálogo e apagar a chave em cada um (correto, porém trabalhoso e fácil de esquecer um caso), aceita-se uma janela de até 30 segundos de defasagem.
-
-Para um catálogo de jogos essa defasagem é irrelevante. Para saldo bancário seria inaceitável. A escolha reflete a tolerância do domínio, não uma limitação da ferramenta.
-
-Usa-se Redis em vez de cache em memória do processo porque, com múltiplas réplicas do CatalogAPI, cada instância teria sua própria cópia com estado divergente. O código trabalha contra a interface `IDistributedCache`, então o Redis é uma implementação substituível.
-
-O header `X-Cache: HIT|MISS` foi adicionado à resposta para tornar o comportamento observável. Medição no cluster: **MISS ~568ms, HIT ~15ms**.
-
----
-
-## Estrutura do repositório
-
-```
-fcg-orchestration/
-├── k8s/
-│   ├── gateway/          Ingress de roteamento, KongConsumer, KongPlugin, Secret da credencial JWT
-│   ├── users-api/        ConfigMap, Secret, Deployment, Service
-│   ├── catalog-api/      idem
-│   ├── payments-api/     idem
-│   ├── rabbitmq/         Deployment + Service
-│   ├── mongodb/          Deployment + Service
-│   ├── redis/            Deployment + Service
-│   └── observability/    ServiceMonitors + dashboard do Grafana como ConfigMap
-└── scripts/
-    ├── bootstrap-dev.sh  Sobe o ambiente completo do zero
-    └── load-image.sh     Carrega uma imagem local nos nós do cluster
-```
-
----
-
-## Notas sobre o ambiente de desenvolvimento
-
-Estas observações são específicas do ambiente usado no desenvolvimento (Docker Desktop com provisionamento via `kind`, no Windows com Git Bash) e podem não se aplicar a outros ambientes.
-
-**Imagens locais não são visíveis ao cluster automaticamente.** Cada nó do cluster é um container com seu próprio containerd, isolado do daemon Docker do host. Uma imagem construída com `docker build` existe no host mas não no nó, resultando em `ErrImageNeverPull`. O script `load-image.sh` resolve isso exportando a imagem e importando-a em cada nó.
-
-Após qualquer alteração de código:
-```bash
-docker build -t fcg-catalog-api:latest .          # na pasta do serviço
-bash scripts/load-image.sh fcg-catalog-api        # na raiz da orquestração
-kubectl rollout restart deployment/catalog-api
-```
-
-**Services do tipo LoadBalancer não recebem IP externo.** O acesso se dá por `kubectl port-forward`, já automatizado no script de bootstrap.
-
-**O estado não sobrevive à parada do cluster.** Os bancos SQLite não têm volume persistente, então os dados são recriados a cada sessão. O script de bootstrap deixa a infraestrutura pronta; os dados de teste precisam ser recriados manualmente.
-
-**Labels nos Services são obrigatórios para a coleta de métricas.** O `ServiceMonitor` seleciona Services por label, não pods. O script de bootstrap reaplica os labels a cada execução.
-
-**Ordem de aplicação importa no Gateway.** O admission webhook do Kong rejeita um `KongConsumer` cujo Secret de credencial ainda não exista. Como `kubectl apply -f <pasta>/` processa arquivos em ordem alfabética, o Secret é aplicado explicitamente antes do restante.
-
-**Git Bash reescreve caminhos.** Argumentos contendo `:/` ou iniciados por `/` são convertidos para o formato de caminho do Windows antes de chegar ao programa de destino, corrompendo comandos como `kubectl cp pod:/caminho`. Prefixar com `MSYS_NO_PATHCONV=1` desativa a conversão.
-
----
+Para remover tudo: `az group delete --name rg-fcg`.
 
 ## Limitações conhecidas
 
-- **Condição de corrida na compra.** A validação de duplicidade em `POST /jogos/{id}/comprar` reduz, mas não elimina, a janela em que duas requisições simultâneas podem passar. A defesa em profundidade é o índice único no banco.
-- **Avaliações não validam existência do jogo.** É possível avaliar um `jogoId` inexistente. Uma verificação prévia no repositório de jogos resolveria.
-- **Cache sem invalidação explícita.** Alterações no catálogo só se refletem após a expiração do TTL.
-- **Observabilidade limitada a métricas.** Traces distribuídos (que permitiriam seguir uma compra através de CatalogAPI → RabbitMQ → PaymentsAPI) não foram implementados — era o diferencial da Opção B, descartada por custo e prazo.
-- **Apenas UsersAPI e CatalogAPI instrumentados.** PaymentsAPI e a Function não expõem métricas.
+- **SQLite em disco persistente (PVC `ReadWriteOnce`):** Users e Catalog usam SQLite. O Rolling Update funciona porque o cluster tem **um único nó**, e o pod novo monta o mesmo disco. Em produção, o correto seria um banco gerenciado (Azure SQL/PostgreSQL) e várias réplicas.
+- **Autorização no Gateway:** o plugin JWT do Kong está aplicado em rotas inteiramente protegidas (ex.: `GET /usuarios`). A autorização fina por endpoint e por perfil (`[Authorize(Roles = "Admin")]`) continua nos serviços, porque o `Ingress` padrão roteia por caminho, não por método HTTP.
+- **`precoAtual` no índice** é uma fotografia do momento da indexação: se uma promoção expirar por tempo, só será atualizado na próxima gravação ou reindexação.
+- **Credencial do pipeline:** usa Service Principal com senha em GitHub Secrets. A evolução natural é OIDC (federação de identidade), sem senha armazenada.
+- **Papel do pipeline no AKS:** `Cluster Admin Role` por simplicidade; em produção, um papel mais restrito (RBAC por namespace).
+- **Notificações (Fase 3):** a Azure Function e o adaptador RabbitMQ → HTTP não foram implantados no AKS nesta fase.
